@@ -1,0 +1,28 @@
+{
+    "name": "infra",
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+    "remoteUser": "vscode",
+    "features": {
+        "ghcr.io/devcontainers-extra/features/go-task:1": {
+            "version": "latest"
+        },
+        "ghcr.io/devcontainers/features/github-cli:1": {},
+        "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+    },
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash"
+            },
+            "extensions": [
+                "GitHub.copilot",
+                "GitHub.copilot-chat"
+            ]
+        }
+    },
+    "remoteEnv": {
+        "GH_CONFIG_DIR": "${containerWorkspaceFolder}/.devcontainer/.gh",
+        "EDITOR": "code --wait",
+        "VISUAL": "code --wait"
+    }
+}
