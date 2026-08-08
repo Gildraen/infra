@@ -1,0 +1,32 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Show available tasks.
+    cmds:
+      - task --list
+
+  up:
+    desc: Start Traefik in background.
+    cmds:
+      - docker compose up -d
+
+  down:
+    desc: Stop Traefik.
+    cmds:
+      - docker compose down
+
+  ps:
+    desc: Show Traefik container status.
+    cmds:
+      - docker compose ps
+
+  logs:
+    desc: Follow Traefik logs.
+    cmds:
+      - docker compose logs -f
+
+  network:
+    desc: Show containers attached to traefik-net.
+    cmds:
+      - docker network inspect traefik-net --format '{{range .Containers}}{{.Name}} {{end}}'
