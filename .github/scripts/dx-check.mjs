@@ -1,100 +1,104 @@
-// Fetches DX files from all repos, diffs them, optionally calls Copilot API,
-// and opens a single issue in infra if drift is detected.
+// Compares DX files of this repo against all peer repos.
+// Identical script runs in every repo — GITHUB_REPOSITORY tells it where it is.
 //
 // Required secrets:
-//   GH_PAT         — classic PAT with `repo` scope (to read private repos)
-//   GITHUB_TOKEN   — automatic, used to open issues in infra
+//   GH_PAT        — classic PAT with `repo` scope (to read private repos)
+//   GITHUB_TOKEN  — automatic, used to open issues in this repo
 // Optional secrets:
-//   COPILOT_TOKEN  — PAT with `copilot` scope for AI analysis
+//   COPILOT_TOKEN — PAT with `copilot` scope for AI analysis
 //
-// Env: DRY_RUN (skip issue creation)
+// Env: GITHUB_REPOSITORY (auto-set by Actions), DRY_RUN (skip issue creation)
 
 const TOKEN = process.env.GITHUB_TOKEN
 if (!TOKEN) { console.error('GITHUB_TOKEN required'); process.exit(1) }
 
-// PAT needed to read private repos cross-context.
+const CURRENT_REPO = process.env.GITHUB_REPOSITORY
+if (!CURRENT_REPO) { console.error('GITHUB_REPOSITORY required'); process.exit(1) }
+
+// PAT needed to read private repos.
 const READ_TOKEN = process.env.GH_PAT || TOKEN
 
 // AI analysis requires a PAT with copilot scope.
 const AI_TOKEN = process.env.COPILOT_TOKEN || null
 
-// Issues are always opened in this repo (GITHUB_TOKEN has write access here).
-const INFRA_REPO = 'Gildraen/infra'
+// All repos in the DX ecosystem. Niki is the reference.
+const ALL_REPOS = ['Gildraen/Niki', 'Gildraen/local-llm']
+const REFERENCE_REPO = 'Gildraen/Niki'
 
-const REPOS = ['Gildraen/Niki', 'Gildraen/local-llm']
+// Peers to compare against (everyone except self).
+const PEERS = ALL_REPOS.filter(r => r !== CURRENT_REPO)
 
 // Path in repo → display label
 const DX_FILES = {
-  '.gitattributes': 'gitattributes',
-  '.gitignore': 'gitignore',
-  'renovate.json': 'renovate.json',
-  '.devcontainer/devcontainer.json': 'devcontainer.json',
-  '.devcontainer/.gh/.gitignore': 'devcontainer/.gh/.gitignore',
-  '.devcontainer/.mcp/.gitignore': 'devcontainer/.mcp/.gitignore',
-  '.devcontainer/.mcp/github/.gitignore': 'devcontainer/.mcp/github/.gitignore',
-  '.agents/rules/git.md': 'agents/git.md',
-  '.github/workflows/validate.yml': 'workflows/validate',
-  '.github/workflows/maintenance.yml': 'workflows/maintenance',
+  '.gitattributes':                          'gitattributes',
+  '.gitignore':                              'gitignore',
+  'renovate.json':                           'renovate.json',
+  '.devcontainer/devcontainer.json':         'devcontainer.json',
+  '.devcontainer/.gh/.gitignore':            'devcontainer/.gh/.gitignore',
+  '.devcontainer/.mcp/.gitignore':           'devcontainer/.mcp/.gitignore',
+  '.devcontainer/.mcp/github/.gitignore':    'devcontainer/.mcp/github/.gitignore',
+  '.agents/rules/git.md':                    'agents/git.md',
+  '.github/workflows/validate.yml':          'workflows/validate',
+  '.github/workflows/maintenance.yml':       'workflows/maintenance',
+  '.github/workflows/dx-coherence.yml':      'workflows/dx-coherence',
+  '.github/scripts/dx-check.mjs':            'scripts/dx-check',
 }
 
 // ---------------------------------------------------------------------------
 // GitHub REST helpers
 // ---------------------------------------------------------------------------
-async function ghFetch(path, opts = {}) {
-  const { headers: extraHeaders = {}, ...restOpts } = opts
-  const res = await fetch(`https://api.github.com${path}`, {
-    ...restOpts,
-    headers: {
-      Authorization: `Bearer ${TOKEN}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      ...extraHeaders,
-    },
-  })
-  return res
-}
-
-async function getFileContent(repo, filePath) {
-  const res = await fetch(`https://api.github.com/repos/${repo}/contents/${filePath.split('/').map(encodeURIComponent).join('/')}`, {
+async function readFile(repo, filePath) {
+  const url = `https://api.github.com/repos/${repo}/contents/${filePath.split('/').map(encodeURIComponent).join('/')}`
+  const res = await fetch(url, {
     headers: {
       Authorization: `Bearer ${READ_TOKEN}`,
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
     },
   })
-  if (res.status === 404 || res.status === 403) return null
   if (!res.ok) return null
   const data = await res.json()
   return Buffer.from(data.content, 'base64').toString('utf8')
 }
 
-async function openIssue(repo, title, body) {
-  if (process.env.DRY_RUN) { console.log(`[dry-run] Would open issue in ${repo}: ${title}`); return }
-  const res = await ghFetch(`/repos/${repo}/issues`, {
+async function openIssue(title, body) {
+  if (process.env.DRY_RUN) { console.log(`[dry-run] Would open issue: ${title}`); return }
+  const res = await fetch(`https://api.github.com/repos/${CURRENT_REPO}/issues`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      Authorization: `Bearer ${TOKEN}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json',
+    },
     body: JSON.stringify({ title, body }),
   })
   if (!res.ok) {
     const err = await res.text()
-    throw new Error(`Failed to open issue in ${repo}: ${res.status} ${err}`)
+    throw new Error(`Failed to open issue: ${res.status} ${err}`)
   }
   const data = await res.json()
   console.log(`Issue opened: ${data.html_url}`)
 }
 
-async function findOpenDriftIssue(repo) {
-  const res = await ghFetch(`/repos/${repo}/issues?state=open&per_page=20`)
+async function findOpenDriftIssue() {
+  const res = await fetch(`https://api.github.com/repos/${CURRENT_REPO}/issues?state=open&per_page=20`, {
+    headers: {
+      Authorization: `Bearer ${TOKEN}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  })
   if (!res.ok) return null
   const issues = await res.json()
   return issues.find(i => i.title.startsWith('[dx-drift]')) || null
 }
 
 // ---------------------------------------------------------------------------
-// GitHub Models API
+// GitHub Copilot API (optional)
 // ---------------------------------------------------------------------------
 async function callModel(prompt) {
-  if (!AI_TOKEN) throw new Error('COPILOT_TOKEN secret not configured')
+  if (!AI_TOKEN) throw new Error('COPILOT_TOKEN not configured')
   const res = await fetch('https://api.githubcopilot.com/chat/completions', {
     method: 'POST',
     headers: {
@@ -117,7 +121,7 @@ async function callModel(prompt) {
 }
 
 // ---------------------------------------------------------------------------
-// Simple line-level diff summary
+// Diff
 // ---------------------------------------------------------------------------
 function diffSummary(label, a, b, repoA, repoB) {
   if (a === null && b === null) return null
@@ -131,8 +135,7 @@ function diffSummary(label, a, b, repoA, repoB) {
   const onlyInB = linesB.filter(l => l.trim() && !linesA.includes(l))
   if (!onlyInA.length && !onlyInB.length) return null
 
-  const lines = []
-  lines.push(`- \`${label}\` diffère entre **${repoA}** et **${repoB}**:`)
+  const lines = [`- \`${label}\` diffère entre **${repoA}** et **${repoB}**:`]
   if (onlyInA.length) lines.push(`  - seulement dans ${repoA}: \`${onlyInA.slice(0, 3).join('`, `')}\``)
   if (onlyInB.length) lines.push(`  - seulement dans ${repoB}: \`${onlyInB.slice(0, 3).join('`, `')}\``)
   return lines.join('\n')
@@ -142,52 +145,54 @@ function diffSummary(label, a, b, repoA, repoB) {
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
-  console.log('Collecting DX snapshots…')
-  const snapshots = {}
-  for (const repo of REPOS) {
-    snapshots[repo] = {}
-    for (const [path, label] of Object.entries(DX_FILES)) {
-      snapshots[repo][label] = await getFileContent(repo, path)
-    }
-    console.log(`  ${repo}: done`)
-  }
-
-  // Diff: Niki (reference) vs local-llm
-  const [repoA, repoB] = REPOS
-  const diffs = { [repoA]: [], [repoB]: [] }
-
-  for (const [, label] of Object.entries(DX_FILES)) {
-    const line = diffSummary(label, snapshots[repoA][label], snapshots[repoB][label], repoA, repoB)
-    if (line) { diffs[repoA].push(line); diffs[repoB].push(line) }
-  }
-
-  const driftedRepos = diffs[repoA].length > 0 ? REPOS : []
-
-  if (!driftedRepos.length) {
-    console.log('No DX drift detected. All repos are coherent.')
+  if (!PEERS.length) {
+    console.log(`${CURRENT_REPO} has no peers to compare against.`)
     return
   }
 
-  console.log(`Drift detected between ${repoA} and ${repoB}`)
+  console.log(`Running DX check for ${CURRENT_REPO} against: ${PEERS.join(', ')}`)
+
+  const snapshots = {}
+  for (const repo of [CURRENT_REPO, ...PEERS]) {
+    snapshots[repo] = {}
+    for (const [path, label] of Object.entries(DX_FILES)) {
+      snapshots[repo][label] = await readFile(repo, path)
+    }
+    console.log(`  ${repo}: fetched`)
+  }
+
+  // Compare current repo against reference
+  const ref = PEERS.includes(REFERENCE_REPO) ? REFERENCE_REPO : PEERS[0]
+  const diffLines = []
+
+  for (const [, label] of Object.entries(DX_FILES)) {
+    const line = diffSummary(label, snapshots[ref][label], snapshots[CURRENT_REPO][label], ref, CURRENT_REPO)
+    if (line) diffLines.push(line)
+  }
+
+  if (!diffLines.length) {
+    console.log('No DX drift detected.')
+    return
+  }
+
+  console.log(`Drift detected (${diffLines.length} differences)`)
   console.log(AI_TOKEN ? 'Calling Copilot API for analysis…' : 'No COPILOT_TOKEN — skipping AI analysis.')
 
-  const allDiffs = diffs[repoA].join('\n')
-
-  let analysis = '_Analyse IA indisponible. Pour l\'activer, configurez le secret `COPILOT_TOKEN` dans le repo infra (PAT avec scope `copilot`)._'
+  let analysis = "_Analyse IA indisponible. Pour l'activer, configurez le secret `COPILOT_TOKEN` (PAT avec scope `copilot`)._"
   try {
     analysis = await callModel(`
-Tu analyses la cohérence DX (developer experience) entre 2 repos GitHub d'un même développeur.
-Les repos sont : ${repoA} (référence) et ${repoB}.
+Tu analyses la cohérence DX entre 2 repos GitHub d'un même développeur.
+Référence : ${ref}. Repo analysé : ${CURRENT_REPO}.
 
-Voici les différences détectées dans les fichiers DX (gitattributes, gitignore, renovate.json, devcontainer.json, protections secrets devcontainer, agents/git.md, CI workflows) :
+Différences détectées dans les fichiers DX :
 
-${allDiffs}
+${diffLines.join('\n')}
 
 1. Explique en 2-3 lignes pourquoi ces différences sont problématiques.
-2. Donne les actions concrètes prioritaires pour aligner (maximum 3 bullet points).
-3. Signale si une différence est intentionnelle et acceptable (ex: local-llm a des fichiers spécifiques à Ollama absents dans Niki — c'est normal).
+2. Actions concrètes prioritaires pour aligner ${CURRENT_REPO} (max 3 bullet points).
+3. Signale si une différence est intentionnelle et acceptable.
 
-Réponds en markdown, en français, de façon très concise.
+Réponds en markdown, en français, très concis.
 `.trim())
   } catch (e) {
     console.warn(`AI analysis skipped: ${e.message}`)
@@ -195,8 +200,7 @@ Réponds en markdown, en français, de façon très concise.
 
   console.log('\n--- Analysis ---\n', analysis, '\n---\n')
 
-  // Open one issue in infra (GITHUB_TOKEN has write access here)
-  const existing = await findOpenDriftIssue(INFRA_REPO)
+  const existing = await findOpenDriftIssue()
   if (existing) {
     console.log(`Issue already open: ${existing.html_url} — skipping`)
     return
@@ -204,11 +208,11 @@ Réponds en markdown, en français, de façon très concise.
 
   const body = `## DX drift détecté — rapport automatique
 
-> Généré par le workflow \`dx-coherence\`. Repos comparés : [${repoA}](https://github.com/${repoA}) (référence) et [${repoB}](https://github.com/${repoB}).
+> Généré par le workflow \`dx-coherence\`. Comparé contre [${ref}](https://github.com/${ref}) (référence).
 
 ### Différences identifiées
 
-${allDiffs}
+${diffLines.join('\n')}
 
 ---
 
@@ -218,9 +222,9 @@ ${analysis}
 
 ---
 
-*Fermer cette issue une fois les fichiers DX alignés. Le prochain run hebdomadaire vérifiera à nouveau.*`
+*Fermer cette issue une fois les fichiers DX alignés.*`
 
-  await openIssue(INFRA_REPO, '[dx-drift] Incohérence DX détectée', body)
+  await openIssue('[dx-drift] Incohérence DX détectée', body)
 }
 
 main().catch(e => { console.error(e); process.exit(1) })
