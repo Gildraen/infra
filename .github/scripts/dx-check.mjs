@@ -74,14 +74,14 @@ async function findOpenDriftIssue(repo) {
 // GitHub Models API
 // ---------------------------------------------------------------------------
 async function callModel(prompt) {
-  const res = await fetch('https://models.inference.ai.azure.com/chat/completions', {
+  const res = await fetch('https://models.github.ai/inference/chat/completions', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${TOKEN}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'gpt-4o-mini',
+      model: 'openai/gpt-4o-mini',
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1200,
       temperature: 0.2,
