@@ -29,5 +29,6 @@ jobs:
       - name: Run DX coherence check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
           COPILOT_TOKEN: ${{ secrets.COPILOT_TOKEN }}
         run: node .github/scripts/dx-check.mjs

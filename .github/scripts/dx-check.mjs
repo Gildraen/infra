@@ -1,17 +1,21 @@
 // Fetches DX files from all repos, diffs them, optionally calls Copilot API,
 // and opens a single issue in infra if drift is detected.
 //
-// DX files tracked: .gitattributes  .gitignore  renovate.json
-//                   devcontainer.json  devcontainer secret .gitignore files
-//                   agents/git.md  validate.yml  maintenance.yml
+// Required secrets:
+//   GH_PAT         — classic PAT with `repo` scope (to read private repos)
+//   GITHUB_TOKEN   — automatic, used to open issues in infra
+// Optional secrets:
+//   COPILOT_TOKEN  — PAT with `copilot` scope for AI analysis
 //
-// Run: node .github/scripts/dx-check.mjs
-// Env: GITHUB_TOKEN (required), COPILOT_TOKEN (optional, enables AI analysis), DRY_RUN
+// Env: DRY_RUN (skip issue creation)
 
 const TOKEN = process.env.GITHUB_TOKEN
 if (!TOKEN) { console.error('GITHUB_TOKEN required'); process.exit(1) }
 
-// AI analysis requires a PAT with copilot scope stored as COPILOT_TOKEN secret.
+// PAT needed to read private repos cross-context.
+const READ_TOKEN = process.env.GH_PAT || TOKEN
+
+// AI analysis requires a PAT with copilot scope.
 const AI_TOKEN = process.env.COPILOT_TOKEN || null
 
 // Issues are always opened in this repo (GITHUB_TOKEN has write access here).
@@ -51,8 +55,14 @@ async function ghFetch(path, opts = {}) {
 }
 
 async function getFileContent(repo, filePath) {
-  const res = await ghFetch(`/repos/${repo}/contents/${encodeURIComponent(filePath)}`)
-  if (res.status === 404) return null
+  const res = await fetch(`https://api.github.com/repos/${repo}/contents/${filePath.split('/').map(encodeURIComponent).join('/')}`, {
+    headers: {
+      Authorization: `Bearer ${READ_TOKEN}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  })
+  if (res.status === 404 || res.status === 403) return null
   if (!res.ok) return null
   const data = await res.json()
   return Buffer.from(data.content, 'base64').toString('utf8')
