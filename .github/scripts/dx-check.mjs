@@ -12,16 +12,20 @@ import { execSync } from 'child_process'
 const TOKEN = process.env.GITHUB_TOKEN
 if (!TOKEN) { console.error('GITHUB_TOKEN required'); process.exit(1) }
 
-const REPOS = ['Gildraen/Niki', 'Gildraen/local-llm', 'Gildraen/infra']
+const REPOS = ['Gildraen/Niki', 'Gildraen/local-llm']
 
 // Path in repo → display label
 const DX_FILES = {
-  '.gitattributes':                    'gitattributes',
-  '.gitignore':                        'gitignore',
-  '.devcontainer/devcontainer.json':   'devcontainer.json',
-  '.agents/rules/git.md':              'agents/git.md',
-  '.github/workflows/validate.yml':    'workflows/validate',
-  '.github/workflows/maintenance.yml': 'workflows/maintenance',
+  '.gitattributes':                          'gitattributes',
+  '.gitignore':                              'gitignore',
+  'renovate.json':                           'renovate.json',
+  '.devcontainer/devcontainer.json':         'devcontainer.json',
+  '.devcontainer/.gh/.gitignore':            'devcontainer/.gh/.gitignore',
+  '.devcontainer/.mcp/.gitignore':           'devcontainer/.mcp/.gitignore',
+  '.devcontainer/.mcp/github/.gitignore':    'devcontainer/.mcp/github/.gitignore',
+  '.agents/rules/git.md':                    'agents/git.md',
+  '.github/workflows/validate.yml':          'workflows/validate',
+  '.github/workflows/maintenance.yml':       'workflows/maintenance',
 }
 
 // ---------------------------------------------------------------------------
@@ -127,27 +131,16 @@ async function main() {
     console.log(`  ${repo}: done`)
   }
 
-  // Pairwise diff (each repo vs the first repo with the file as reference)
-  const diffs = {}  // repo → list of diff lines
-  for (const repo of REPOS) diffs[repo] = []
+  // Diff: Niki (reference) vs local-llm
+  const [repoA, repoB] = REPOS
+  const diffs = { [repoA]: [], [repoB]: [] }
 
-  const refRepo = REPOS[0]
   for (const [, label] of Object.entries(DX_FILES)) {
-    for (let i = 1; i < REPOS.length; i++) {
-      const repo = REPOS[i]
-      const line = diffSummary(label, snapshots[refRepo][label], snapshots[repo][label], refRepo, repo)
-      if (line) diffs[repo].push(line)
-    }
+    const line = diffSummary(label, snapshots[repoA][label], snapshots[repoB][label], repoA, repoB)
+    if (line) { diffs[repoA].push(line); diffs[repoB].push(line) }
   }
 
-  // Also check between REPOS[1] and REPOS[2]
-  for (const [, label] of Object.entries(DX_FILES)) {
-    const line = diffSummary(label, snapshots[REPOS[1]][label], snapshots[REPOS[2]][label], REPOS[1], REPOS[2])
-    if (line) diffs[REPOS[2]].push(line)
-  }
-
-  // Deduplicate and filter repos with actual drift
-  const driftedRepos = REPOS.filter(r => diffs[r].length > 0)
+  const driftedRepos = diffs[repoA].length > 0 ? REPOS : []
 
   if (!driftedRepos.length) {
     console.log('No DX drift detected. All repos are coherent.')
@@ -157,22 +150,19 @@ async function main() {
   console.log(`Drift detected in: ${driftedRepos.join(', ')}`)
   console.log('Calling GitHub Models for analysis…')
 
-  const allDiffs = REPOS.map(r =>
-    diffs[r].length ? `### ${r}\n${diffs[r].join('\n')}` : `### ${r}\n✅ no drift`
-  ).join('\n\n')
+  const allDiffs = diffs[repoA].join('\n')
 
   const analysis = await callModel(`
-Tu analyses la cohérence DX (developer experience) entre 3 repos GitHub d'un même développeur.
-Les repos sont : ${REPOS.join(', ')}.
+Tu analyses la cohérence DX (developer experience) entre 2 repos GitHub d'un même développeur.
+Les repos sont : ${repoA} (référence) et ${repoB}.
 
-Voici les différences détectées dans les fichiers DX (gitattributes, gitignore, devcontainer, agents/git.md, CI workflows) :
+Voici les différences détectées dans les fichiers DX (gitattributes, gitignore, renovate.json, devcontainer.json, protections secrets devcontainer, agents/git.md, CI workflows) :
 
 ${allDiffs}
 
-Pour chaque repo avec du drift :
-1. Explique en 2-3 lignes pourquoi c'est problématique.
-2. Donne les actions concrètes prioritaires pour aligner (sois concis, maximum 3 bullet points par repo).
-3. Signale si une différence est intentionnelle et acceptable (ex: infra n'a pas de CI car pas de code).
+1. Explique en 2-3 lignes pourquoi ces différences sont problématiques.
+2. Donne les actions concrètes prioritaires pour aligner (maximum 3 bullet points).
+3. Signale si une différence est intentionnelle et acceptable (ex: local-llm a des fichiers spécifiques à Ollama absents dans Niki — c'est normal).
 
 Réponds en markdown, en français, de façon très concise.
 `.trim())
@@ -191,7 +181,7 @@ Réponds en markdown, en français, de façon très concise.
 
 > Généré par le workflow \`dx-coherence\` dans [Gildraen/infra](https://github.com/Gildraen/infra).
 
-### Différences identifiées
+### Différences identifiées entre ${repoA} et ${repoB}
 
 ${diffs[repo].join('\n')}
 
