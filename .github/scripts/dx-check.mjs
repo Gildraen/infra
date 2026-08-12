@@ -74,14 +74,14 @@ async function findOpenDriftIssue(repo) {
 // GitHub Models API
 // ---------------------------------------------------------------------------
 async function callModel(prompt) {
-  const res = await fetch('https://models.github.ai/inference/chat/completions', {
+  const res = await fetch('https://api.githubcopilot.com/chat/completions', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${TOKEN}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'openai/gpt-4o-mini',
+      model: 'gpt-4o-mini',
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1200,
       temperature: 0.2,
@@ -89,7 +89,7 @@ async function callModel(prompt) {
   })
   if (!res.ok) {
     const err = await res.text()
-    throw new Error(`Models API error ${res.status}: ${err}`)
+    throw new Error(`Copilot API error ${res.status}: ${err}`)
   }
   const data = await res.json()
   return data.choices[0].message.content.trim()
@@ -148,11 +148,13 @@ async function main() {
   }
 
   console.log(`Drift detected in: ${driftedRepos.join(', ')}`)
-  console.log('Calling GitHub Models for analysis…')
+  console.log('Calling Copilot API for analysis…')
 
   const allDiffs = diffs[repoA].join('\n')
 
-  const analysis = await callModel(`
+  let analysis = '_Analyse IA indisponible — voir les différences ci-dessus._'
+  try {
+    analysis = await callModel(`
 Tu analyses la cohérence DX (developer experience) entre 2 repos GitHub d'un même développeur.
 Les repos sont : ${repoA} (référence) et ${repoB}.
 
@@ -166,6 +168,9 @@ ${allDiffs}
 
 Réponds en markdown, en français, de façon très concise.
 `.trim())
+  } catch (e) {
+    console.warn(`AI analysis skipped: ${e.message}`)
+  }
 
   console.log('\n--- Analysis ---\n', analysis, '\n---\n')
 
