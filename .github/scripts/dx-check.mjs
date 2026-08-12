@@ -1,31 +1,36 @@
-// Fetches DX files from all repos, diffs them, calls GitHub Models,
-// and opens an issue in each repo that has drifted.
+// Fetches DX files from all repos, diffs them, optionally calls Copilot API,
+// and opens a single issue in infra if drift is detected.
 //
-// DX files tracked: .gitattributes  .gitignore  devcontainer.json
-//                   agents-git.md   validate.yml  maintenance.yml
+// DX files tracked: .gitattributes  .gitignore  renovate.json
+//                   devcontainer.json  devcontainer secret .gitignore files
+//                   agents/git.md  validate.yml  maintenance.yml
 //
 // Run: node .github/scripts/dx-check.mjs
-// Env: GITHUB_TOKEN, DRY_RUN (optional, skip issue creation)
-
-import { execSync } from 'child_process'
+// Env: GITHUB_TOKEN (required), COPILOT_TOKEN (optional, enables AI analysis), DRY_RUN
 
 const TOKEN = process.env.GITHUB_TOKEN
 if (!TOKEN) { console.error('GITHUB_TOKEN required'); process.exit(1) }
+
+// AI analysis requires a PAT with copilot scope stored as COPILOT_TOKEN secret.
+const AI_TOKEN = process.env.COPILOT_TOKEN || null
+
+// Issues are always opened in this repo (GITHUB_TOKEN has write access here).
+const INFRA_REPO = 'Gildraen/infra'
 
 const REPOS = ['Gildraen/Niki', 'Gildraen/local-llm']
 
 // Path in repo → display label
 const DX_FILES = {
-  '.gitattributes':                          'gitattributes',
-  '.gitignore':                              'gitignore',
-  'renovate.json':                           'renovate.json',
-  '.devcontainer/devcontainer.json':         'devcontainer.json',
-  '.devcontainer/.gh/.gitignore':            'devcontainer/.gh/.gitignore',
-  '.devcontainer/.mcp/.gitignore':           'devcontainer/.mcp/.gitignore',
-  '.devcontainer/.mcp/github/.gitignore':    'devcontainer/.mcp/github/.gitignore',
-  '.agents/rules/git.md':                    'agents/git.md',
-  '.github/workflows/validate.yml':          'workflows/validate',
-  '.github/workflows/maintenance.yml':       'workflows/maintenance',
+  '.gitattributes': 'gitattributes',
+  '.gitignore': 'gitignore',
+  'renovate.json': 'renovate.json',
+  '.devcontainer/devcontainer.json': 'devcontainer.json',
+  '.devcontainer/.gh/.gitignore': 'devcontainer/.gh/.gitignore',
+  '.devcontainer/.mcp/.gitignore': 'devcontainer/.mcp/.gitignore',
+  '.devcontainer/.mcp/github/.gitignore': 'devcontainer/.mcp/github/.gitignore',
+  '.agents/rules/git.md': 'agents/git.md',
+  '.github/workflows/validate.yml': 'workflows/validate',
+  '.github/workflows/maintenance.yml': 'workflows/maintenance',
 }
 
 // ---------------------------------------------------------------------------
@@ -57,14 +62,18 @@ async function openIssue(repo, title, body) {
   const res = await ghFetch(`/repos/${repo}/issues`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, body, labels: ['dx-drift'] }),
+    body: JSON.stringify({ title, body }),
   })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Failed to open issue in ${repo}: ${res.status} ${err}`)
+  }
   const data = await res.json()
   console.log(`Issue opened: ${data.html_url}`)
 }
 
 async function findOpenDriftIssue(repo) {
-  const res = await ghFetch(`/repos/${repo}/issues?state=open&labels=dx-drift&per_page=5`)
+  const res = await ghFetch(`/repos/${repo}/issues?state=open&per_page=20`)
   if (!res.ok) return null
   const issues = await res.json()
   return issues.find(i => i.title.startsWith('[dx-drift]')) || null
@@ -74,10 +83,11 @@ async function findOpenDriftIssue(repo) {
 // GitHub Models API
 // ---------------------------------------------------------------------------
 async function callModel(prompt) {
+  if (!AI_TOKEN) throw new Error('COPILOT_TOKEN secret not configured')
   const res = await fetch('https://api.githubcopilot.com/chat/completions', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${TOKEN}`,
+      Authorization: `Bearer ${AI_TOKEN}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -112,8 +122,8 @@ function diffSummary(label, a, b, repoA, repoB) {
 
   const lines = []
   lines.push(`- \`${label}\` diffère entre **${repoA}** et **${repoB}**:`)
-  if (onlyInA.length) lines.push(`  - seulement dans ${repoA}: \`${onlyInA.slice(0,3).join('`, `')}\``)
-  if (onlyInB.length) lines.push(`  - seulement dans ${repoB}: \`${onlyInB.slice(0,3).join('`, `')}\``)
+  if (onlyInA.length) lines.push(`  - seulement dans ${repoA}: \`${onlyInA.slice(0, 3).join('`, `')}\``)
+  if (onlyInB.length) lines.push(`  - seulement dans ${repoB}: \`${onlyInB.slice(0, 3).join('`, `')}\``)
   return lines.join('\n')
 }
 
@@ -147,12 +157,12 @@ async function main() {
     return
   }
 
-  console.log(`Drift detected in: ${driftedRepos.join(', ')}`)
-  console.log('Calling Copilot API for analysis…')
+  console.log(`Drift detected between ${repoA} and ${repoB}`)
+  console.log(AI_TOKEN ? 'Calling Copilot API for analysis…' : 'No COPILOT_TOKEN — skipping AI analysis.')
 
   const allDiffs = diffs[repoA].join('\n')
 
-  let analysis = '_Analyse IA indisponible — voir les différences ci-dessus._'
+  let analysis = '_Analyse IA indisponible. Pour l\'activer, configurez le secret `COPILOT_TOKEN` dans le repo infra (PAT avec scope `copilot`)._'
   try {
     analysis = await callModel(`
 Tu analyses la cohérence DX (developer experience) entre 2 repos GitHub d'un même développeur.
@@ -174,21 +184,20 @@ Réponds en markdown, en français, de façon très concise.
 
   console.log('\n--- Analysis ---\n', analysis, '\n---\n')
 
-  // Open one issue per drifted repo
-  for (const repo of driftedRepos) {
-    const existing = await findOpenDriftIssue(repo)
-    if (existing) {
-      console.log(`Issue already open in ${repo}: ${existing.html_url} — skipping`)
-      continue
-    }
+  // Open one issue in infra (GITHUB_TOKEN has write access here)
+  const existing = await findOpenDriftIssue(INFRA_REPO)
+  if (existing) {
+    console.log(`Issue already open: ${existing.html_url} — skipping`)
+    return
+  }
 
-    const body = `## DX drift détecté — rapport automatique
+  const body = `## DX drift détecté — rapport automatique
 
-> Généré par le workflow \`dx-coherence\` dans [Gildraen/infra](https://github.com/Gildraen/infra).
+> Généré par le workflow \`dx-coherence\`. Repos comparés : [${repoA}](https://github.com/${repoA}) (référence) et [${repoB}](https://github.com/${repoB}).
 
-### Différences identifiées entre ${repoA} et ${repoB}
+### Différences identifiées
 
-${diffs[repo].join('\n')}
+${allDiffs}
 
 ---
 
@@ -200,8 +209,7 @@ ${analysis}
 
 *Fermer cette issue une fois les fichiers DX alignés. Le prochain run hebdomadaire vérifiera à nouveau.*`
 
-    await openIssue(repo, '[dx-drift] Incohérence DX détectée', body)
-  }
+  await openIssue(INFRA_REPO, '[dx-drift] Incohérence DX détectée', body)
 }
 
 main().catch(e => { console.error(e); process.exit(1) })
