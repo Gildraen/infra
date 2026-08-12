@@ -37,14 +37,15 @@ const DX_FILES = {
 // GitHub REST helpers
 // ---------------------------------------------------------------------------
 async function ghFetch(path, opts = {}) {
+  const { headers: extraHeaders = {}, ...restOpts } = opts
   const res = await fetch(`https://api.github.com${path}`, {
+    ...restOpts,
     headers: {
       Authorization: `Bearer ${TOKEN}`,
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
-      ...opts.headers,
+      ...extraHeaders,
     },
-    ...opts,
   })
   return res
 }
